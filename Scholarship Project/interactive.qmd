@@ -1,0 +1,125 @@
+---
+title: "Dash App in Quarto"
+format: html
+execute:
+  echo: true
+  warning: false
+  error: true
+output:
+    html_document:
+        self_contained: true
+        mathjax: 'cdn'
+engine: jupyter
+
+---
+
+```{python}
+import pandas as pd
+import altair as alt 
+import warnings
+import geopandas as gpd
+import json
+import urllib.request
+
+df = pd.read_csv('security_incidents.csv')
+df.head()
+```
+
+```{python}
+from vega_datasets import data
+
+countries = alt.topo_feature(data.world_110m.url, "countries")
+
+selection = alt.selection_interval()
+
+base_map = alt.Chart(countries).mark_geoshape(
+    fill='lightgray', stroke='white'
+).project(
+    'equirectangular' 
+).properties(
+    width=600, height=450
+)
+df = df.dropna(subset=['Country'])
+
+
+df['Year'] = df['Year'].astype(int)
+
+year_dropdown = alt.param(
+    name="Year", 
+    bind=alt.binding_select(options=sorted(df['Year'].unique())), 
+    value=df['Year'].min()
+)
+
+points = alt.Chart(df).mark_circle().encode(
+    longitude='Longitude:Q',
+    latitude='Latitude:Q',
+    size=alt.Size('Total killed:Q', scale=alt.Scale(range=[10, 300])),  
+    color=alt.Color('Attack context:N', scale=alt.Scale(scheme='category10')), 
+    tooltip=['Year:N', 'Country:N', 'Total killed:Q','Total affected:Q', 'Attack context:N']
+).transform_filter(alt.datum.Year == year_dropdown
+)
+
+alt.layer(base_map, points).add_params(year_dropdown)
+```
+
+```{python}
+
+grouped_df = df.groupby('Country')['Total affected'].sum().reset_index()
+grouped_df = grouped_df.sort_values(by='Total affected', ascending=False)
+grouped_df.head(10)
+```
+
+```{python}
+import dash
+from dash import dcc, html
+from dash.dependencies import Input, Output, State
+import plotly.express as px
+from jupyter_dash import JupyterDash
+
+bar_chart = px.bar(grouped_df.head(6), x='Country', y='Total affected', title="Total Affected by Country")
+
+scatter_plot = px.scatter(df, x='Year', y='Total affected', color='Country', title="Scatter Plot of Total Affected over Time")
+
+
+```
+
+```{python}
+app = JupyterDash(__name__)
+
+app.layout = html.Div([
+    html.H1("Interactive Plot Example"),
+    html.Div([
+        # The bar chart
+        dcc.Graph(id='bar-chart', figure=bar_chart),
+    ], style={'width': '48%', 'display': 'inline-block'}),
+    
+    html.Div([
+        # The scatter plot
+        dcc.Graph(id='scatter-plot', figure=None),
+    ], style={'width': '48%', 'display': 'inline-block'}),
+    
+    # Reset button
+    html.Button("Reset", id="reset-button", n_clicks=0),
+])
+
+@app.callback(
+    Output('scatter-plot', 'figure'),
+    [Input('bar-chart', 'clickData'),
+     Input('reset-button', 'n_clicks')])
+
+def update_scatter_plot(clickData,n_clicks):
+
+    if n_clicks > 0:
+        return scatter_plot
+
+    if clickData is not None:
+        selected_country = clickData['points'][0]['x']
+        filtered_df = df[df['Country'] == selected_country]
+
+        updated_scatter_plot = px.scatter(filtered_df, x='Year', y='Total affected', color='Country', title=f"Scatter Plot for {selected_country}")
+        return updated_scatter_plot
+
+    return scatter_plot
+
+app.run_server(debug=True,port=8055,use_reloader=False, mode='inline')
+```
